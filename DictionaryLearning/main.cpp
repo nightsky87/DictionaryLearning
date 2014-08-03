@@ -9,13 +9,21 @@ struct PatchGroup
 	unsigned int cnt;
 };
 
+struct PatchDesc
+{
+	double *dist;
+	unsigned int *xPos;
+	unsigned int *yPos;
+	unsigned int channel;
+};
+
 struct ImagePair
 {
 	double *imgHR;
 	double *imgLR;
 	unsigned int width;
 	unsigned int height;
-	unsigned int colors;
+	unsigned int channels;
 };
 
 struct Dictionary
@@ -39,7 +47,7 @@ struct TrainParams
 int loadDict(Dictionary &dict, char *fname);
 void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params);
 void vectorizePatch(double *img, double *vector, unsigned int x, unsigned int y, unsigned int c, unsigned int w, unsigned int h, unsigned int bsize);
-double *groupPatches(double *imgLR, double *imgHR, double *patchGroup, double *dist, unsigned int *xPos, unsigned int *yPos, unsigned int ch, double thresh, double bsize, double wsize, unsigned int h, unsigned int w, unsigned int &cnt);
+void groupPatches(ImagePair img, PatchDesc desc, TrainParams params, PatchGroup &grp);
 double patchDist(double *nPatch, double *tPatch, unsigned int bsize, double norm);
 double *getSparseCoefficients(double *patchGroup, double *dict, unsigned int cnt, unsigned int gsize, double sparsity, double recError);
 void updateDictionary(double *patchGroup, double *dict, double *gamma, unsigned int cnt, unsigned int gsize);
@@ -62,19 +70,21 @@ int main(int argc, char *argv[])
 
 	/*********************************************************
 	Parameter list:
-		1 - dictionary filename
-		2 - path to image repository
-		3 - number of images in repository
-		4 - patches per image
-		5 - number of epochs (passes through all images)
-		6 - window size
-		7 - norm											
-		8 - target sparsity
-		9 - max reconstruction error 
+		0  - name of executable file (not needed)
+		1  - dictionary filename
+		2  - path to image repository
+		3  - number of images in repository
+		4  - patches per image
+		5  - number of epochs (passes through all images)
+		6  - window size
+		7  - norm											
+		8  - target sparsity
+		9  - max reconstruction error
+		10 - distance threshold between patches
 	**********************************************************/
 
 	// Check if number of arguments is correct
-	if (argc != 10)
+	if (argc != 11)
 	{
 		printf("Incorrect number of parameters\n");
 		return -1;
@@ -153,6 +163,14 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	// Get the distance threshold between patches
+	params.thresh = atof(argv[10]);
+	if (params.thresh < 0)
+	{
+		printf("Invalid patch distance threshold\n");
+		return -1;
+	}
+
 	// Seed randomizer to 0
 	srand(0);
 
@@ -185,7 +203,7 @@ int main(int argc, char *argv[])
 			img.imgHR = imageHR.data();
 			img.width = w / 2;
 			img.height = h / 2;
-			img.colors = c;
+			img.channels = c;
 
 			// Perform random block matching on the image
 			sTime = getTime();
@@ -241,13 +259,15 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 	//const int gsize = 5 * bsize * bsize;
 	const int halfWindowSize = (params.windowSize - 1) / 2;
 
-	//int i, j;
+	int i, j;
 	//unsigned int a, n, x, y, ch, cnt;
-	unsigned int n, x, y, c;
-	unsigned int *xPos, *yPos;
+	unsigned int a, n, x, y, c;
 
-	//double tmp, mean;
-	double *dist, *nPatch, *tPatch, *uPatch, *patchGroup;
+	double tmp;
+	double *nPatch, *tPatch, *uPatch;
+
+	PatchDesc desc;
+	PatchGroup grp;
 
 	// Allocate memory for the normalized patches
 	nPatch = (double *)mkl_malloc(sizeof(double)* sqPatchSize, 64);
@@ -255,104 +275,105 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 	uPatch = (double *)mkl_malloc(sizeof(double)* sqPatchSize, 64);
 
 	// Allocate memory for the distance and position matrices
-	dist = (double *)mkl_malloc(sizeof(double)* sqWindowSize, 64);
-	xPos = (unsigned int *)mkl_malloc(sizeof(unsigned int)* sqWindowSize, 64);
-	yPos = (unsigned int *)mkl_malloc(sizeof(unsigned int)* sqWindowSize, 64);
+	desc.dist = (double *)mkl_malloc(sizeof(double)* sqWindowSize, 64);
+	desc.xPos = (unsigned int *)mkl_malloc(sizeof(unsigned int)* sqWindowSize, 64);
+	desc.yPos = (unsigned int *)mkl_malloc(sizeof(unsigned int)* sqWindowSize, 64);
 
 	// Pre-allocate patch group
-	patchGroup = (double *)mkl_malloc(sizeof(double),64);
+	grp.data = (double *)mkl_malloc(sizeof(double) * dict.dictSize * sqWindowSize,64);
 
 	if (params.norm == 1)
 	{
 		for (n = 0; n < params.patchPerImage; n++)
 		{
-			// Select a random block from (hwindow, hwindow) to (h-hwindow-bsize-1, w-hwindow-bsize-1)
+			// Select a random block from (halfWindowSize, halfWindowSize) to (h-halfWindowSize-bsize-1, w-halfWindowSize-bsize-1)
 			x = (rand() % (img.width - params.windowSize - params.patchSize)) + halfWindowSize;
 			y = (rand() % (img.height - params.windowSize - params.patchSize)) + halfWindowSize;
-			c = rand() % img.colors;
+			c = rand() % img.channels;
 
 			// Copy patch pixels into vector in column-major format
-			vectorizePatch(imgLR, nPatch, x, y, ch, w, h, bsize);
+			vectorizePatch(img.imgLR, nPatch, x, y, c, img.width, img.height, params.patchSize);
 
 			// Calculate the sum of absolute magnitudes (l1-norm) of the vector
-			tmp = 1 / cblas_dasum(vsize, nPatch, 1);
+			tmp = 1 / cblas_dasum(sqPatchSize, nPatch, 1);
 
 			// Multiply the original vector by a scaling factor
-			cblas_dscal(vsize, tmp, nPatch, 1);
+			cblas_dscal(sqPatchSize, tmp, nPatch, 1);
 
 			// Process each neighbor
 			a = 0;
-			for (i = -hwindow; i <= hwindow; i++)
+			for (i = -halfWindowSize; i <= halfWindowSize; i++)
 			{
-				for (j = -hwindow; j <= hwindow; j++)
+				for (j = -halfWindowSize; j <= halfWindowSize; j++)
 				{
 					// Copy patch pixels into vector in column-major format
-					vectorizePatch(imgLR, tPatch, x+j, y+i, ch, w, h, bsize);
+					vectorizePatch(img.imgLR, tPatch, x+j, y+i, c, img.width, img.height, params.patchSize);
 
 					// Calculate the sum of absolute magnitudes (l1-norm) of the vector
-					tmp = 1 / cblas_dasum(vsize, tPatch, 1);
+					tmp = 1 / cblas_dasum(sqPatchSize, tPatch, 1);
 
 					// Multiply the original vector by a scaling factor
-					cblas_dscal(vsize, tmp, tPatch, 1);
+					cblas_dscal(sqPatchSize, tmp, tPatch, 1);
 
 					// Calculate the patch distance
-					vdsub(&vsize, nPatch, tPatch, uPatch);
+					vdsub(&sqPatchSize, nPatch, tPatch, uPatch);
 
 					// Store the distance and position descriptors
-					dist[a] = cblas_dasum(vsize, uPatch, 1);
-					xPos[a] = x + j;
-					yPos[a] = y + i;
+					desc.dist[a] = cblas_dasum(sqPatchSize, uPatch, 1);
+					desc.xPos[a] = x + j;
+					desc.yPos[a] = y + i;
 
 					a++;
 				}
 			}
+			desc.channel = c;
 
 			// Group similar patches
-			patchGroup = groupPatches(imgLR, imgHR, patchGroup, dist, xPos, yPos, ch, thresh, bsize, wsize, h, w, cnt);
+			groupPatches(img, desc, params, grp);
 
-			// Determine the sparse coefficients
-			getSparseCoefficients(patchGroup, dict, cnt, gsize, sparsity, recError);
+			//// Determine the sparse coefficients
+			//getSparseCoefficients(patchGroup, dict, cnt, gsize, sparsity, recError);
 		}
 	}
 //	else if (norm == 2)
 //	{
 //		for (n = 0; n < RANDOM_PATCHES_PER_FILE; n++)
 //		{
-//			// Select a random block from (hwindow, hwindow) to (h-hwindow-bsize-1, w-hwindow-bsize-1)
-//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding hwindow
-//			x = (rand() % (w - window - bsize)) + hwindow;
-//			y = (rand() % (h - window - bsize)) + hwindow;
+//			// Select a random block from (halfWindowSize, halfWindowSize) to (h-halfWindowSize-bsize-1, w-halfWindowSize-bsize-1)
+//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding halfWindowSize
+//			x = (rand() % (w - window - bsize)) + halfWindowSize;
+//			y = (rand() % (h - window - bsize)) + halfWindowSize;
 //			ch = rand() % c;
 //
 //			// Copy patch pixels into vector in column-major format
 //			vectorizePatch(imgLR, nPatch, x, y, ch, w, h, bsize);
 //
 //			// Calculate the l2-norm of the vector
-//			tmp = 1 / cblas_dnrm2(vsize, nPatch, 1);
+//			tmp = 1 / cblas_dnrm2(sqPatchSize, nPatch, 1);
 //
 //			// Multiply the original vector by a scaling factor
-//			cblas_dscal(vsize, tmp, nPatch, 1);
+//			cblas_dscal(sqPatchSize, tmp, nPatch, 1);
 //
 //			// Process each neighbor
 //			a = 0;
-//			for (i = -hwindow; i <= hwindow; i++)
+//			for (i = -halfWindowSize; i <= halfWindowSize; i++)
 //			{
-//				for (j = -hwindow; j <= hwindow; j++)
+//				for (j = -halfWindowSize; j <= halfWindowSize; j++)
 //				{
 //					// Copy patch pixels into vector in column-major format
 //					vectorizePatch(imgLR, tPatch, x+j, y+i, ch, w, h, bsize);
 //
 //					// Calculate the l2-norm of the vector
-//					tmp = 1 / cblas_dnrm2(vsize, tPatch, 1);
+//					tmp = 1 / cblas_dnrm2(sqPatchSize, tPatch, 1);
 //
 //					// Multiply the original vector by a scaling factor
-//					cblas_dscal(vsize, tmp, tPatch, 1);
+//					cblas_dscal(sqPatchSize, tmp, tPatch, 1);
 //
 //					// Calculate the patch distance
-//					vdsub(&vsize, nPatch, tPatch, uPatch);
+//					vdsub(&sqPatchSize, nPatch, tPatch, uPatch);
 //
 //					// Store the distance and position descriptors
-//					dist[a] = cblas_dnrm2(vsize, uPatch, 1);
+//					dist[a] = cblas_dnrm2(sqPatchSize, uPatch, 1);
 //					xPos[a] = x + j;
 //					yPos[a] = y + i;
 //
@@ -368,47 +389,47 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 //	{
 //		for (n = 0; n < RANDOM_PATCHES_PER_FILE; n++)
 //		{
-//			// Select a random block from (hwindow, hwindow) to (h-hwindow-bsize-1, w-hwindow-bsize-1)
-//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding hwindow
-//			x = (rand() % (w - window - bsize)) + hwindow;
-//			y = (rand() % (h - window - bsize)) + hwindow;
+//			// Select a random block from (halfWindowSize, halfWindowSize) to (h-halfWindowSize-bsize-1, w-halfWindowSize-bsize-1)
+//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding halfWindowSize
+//			x = (rand() % (w - window - bsize)) + halfWindowSize;
+//			y = (rand() % (h - window - bsize)) + halfWindowSize;
 //			ch = rand() % c;
 //
 //			// Copy patch pixels into vector in column-major format
 //			vectorizePatch(imgLR, nPatch, x, y, ch, w, h, bsize);
 //
 //			// Calculate the lp-norm of the vector
-//			vdabs(&vsize, nPatch, tPatch);
-//			vdpowx(&vsize, tPatch, &norm, tPatch);
-//			tmp = 1 / pow(cblas_dasum(vsize, tPatch, 1), 1/norm);
+//			vdabs(&sqPatchSize, nPatch, tPatch);
+//			vdpowx(&sqPatchSize, tPatch, &norm, tPatch);
+//			tmp = 1 / pow(cblas_dasum(sqPatchSize, tPatch, 1), 1/norm);
 //
 //			// Multiply the original vector by a scaling factor
-//			cblas_dscal(vsize, tmp, nPatch, 1);
+//			cblas_dscal(sqPatchSize, tmp, nPatch, 1);
 //
 //			// Process each neighbor
 //			a = 0;
-//			for (i = -hwindow; i <= hwindow; i++)
+//			for (i = -halfWindowSize; i <= halfWindowSize; i++)
 //			{
-//				for (j = -hwindow; j <= hwindow; j++)
+//				for (j = -halfWindowSize; j <= halfWindowSize; j++)
 //				{
 //					// Copy patch pixels into vector in column-major format
 //					vectorizePatch(imgLR, tPatch, x+j, y+i, ch, w, h, bsize);
 //
 //					// Calculate the lp-norm of the vector
-//					vdabs(&vsize, tPatch, uPatch);
-//					vdpowx(&vsize, uPatch, &norm, uPatch);
-//					tmp = 1 / pow(cblas_dasum(vsize, uPatch, 1), 1/norm);
+//					vdabs(&sqPatchSize, tPatch, uPatch);
+//					vdpowx(&sqPatchSize, uPatch, &norm, uPatch);
+//					tmp = 1 / pow(cblas_dasum(sqPatchSize, uPatch, 1), 1/norm);
 //
 //					// Multiply the original vector by a scaling factor
-//					cblas_dscal(vsize, tmp, tPatch, 1);
+//					cblas_dscal(sqPatchSize, tmp, tPatch, 1);
 //
 //					// Calculate the patch distance
-//					vdsub(&vsize, nPatch, tPatch, uPatch);
-//					vdabs(&vsize, uPatch, uPatch);
-//					vdpowx(&vsize, uPatch, &norm, uPatch);
+//					vdsub(&sqPatchSize, nPatch, tPatch, uPatch);
+//					vdabs(&sqPatchSize, uPatch, uPatch);
+//					vdpowx(&sqPatchSize, uPatch, &norm, uPatch);
 //
 //					// Store the distance and position descriptors
-//					dist[a] = cblas_dasum(vsize, uPatch, 1);
+//					dist[a] = cblas_dasum(sqPatchSize, uPatch, 1);
 //					xPos[a] = x + j;
 //					yPos[a] = y + i;
 //
@@ -424,10 +445,10 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 //	{
 //		for (n = 0; n < RANDOM_PATCHES_PER_FILE; n++)
 //		{
-//			// Select a random block from (hwindow, hwindow) to (h-hwindow-bsize-1, w-hwindow-bsize-1)
-//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding hwindow
-//			x = (rand() % (w - window - bsize)) + hwindow;
-//			y = (rand() % (h - window - bsize)) + hwindow;
+//			// Select a random block from (halfWindowSize, halfWindowSize) to (h-halfWindowSize-bsize-1, w-halfWindowSize-bsize-1)
+//			// Generally, this means generating a random coordinate from 0 to <h/w>-window-bsize and adding halfWindowSize
+//			x = (rand() % (w - window - bsize)) + halfWindowSize;
+//			y = (rand() % (h - window - bsize)) + halfWindowSize;
 //			ch = rand() % c;
 //
 //			// Copy patch pixels into vector in column-major format
@@ -435,18 +456,18 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 //
 //			// Process each neighbor
 //			a = 0;
-//			for (i = -hwindow; i <= hwindow; i++)
+//			for (i = -halfWindowSize; i <= halfWindowSize; i++)
 //			{
-//				for (j = -hwindow; j <= hwindow; j++)
+//				for (j = -halfWindowSize; j <= halfWindowSize; j++)
 //				{
 //					// Copy patch pixels into vector in column-major format
 //					vectorizePatch(imgLR, tPatch, x+j, y+i, ch, w, h, bsize);
 //
 //					// Calculate the patch distance
-//					vdsub(&vsize, nPatch, tPatch, uPatch);
+//					vdsub(&sqPatchSize, nPatch, tPatch, uPatch);
 //
 //					// Store the distance and position descriptors
-//					dist[a] = cblas_dnrm2(vsize, uPatch, 1);
+//					dist[a] = cblas_dnrm2(sqPatchSize, uPatch, 1);
 //					xPos[a] = x + j;
 //					yPos[a] = y + i;
 //
@@ -460,89 +481,82 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 //	}
 }
 
-//void vectorizePatch(double *img, double *vector, unsigned int x, unsigned int y, unsigned int c, unsigned int w, unsigned int h, unsigned int bsize)
-//{
-//	const int tsize = bsize;
-//	const int inc = 1;
-//	double mean, tmp;
-//	unsigned int i, j, a;
-//	int p, n, xstorage;
-//
-//	// Copy the patch pixels to the vector in column-major format
-//	a = 0;
-//	mean = 0;
-//	for (j = 0; j < bsize; j++)
-//	{
-//		cblas_dcopy(bsize, &img[h*w*c+h*(x+j)+y], 1, &vector[a], 1);
-//		for (i = 0; i < bsize; i++)
-//		{
-//			mean += img[h*w*c+h*(x+j)+y+i];
-//		}
-//		a += bsize;
-//	}
-//	mean /= (bsize * bsize);
-//
-//	for (a = 0; a < bsize * bsize; a++)
-//	{
-//		vector[a] -= mean;
-//	}
-//
-//	return;
-//}
-//
-//double *groupPatches(double *imgLR, double *imgHR, double *patchGroup, double *dist, unsigned int *xPos, unsigned int *yPos, unsigned int ch, double thresh, double bsize, double wsize, unsigned int h, unsigned int w, unsigned int &cnt)
-//{
-//	const int lrsize = bsize;
-//	const int hrsize = 2 * bsize;
-//	const int vsize = bsize * bsize;
-//	const int gsize = 5 * bsize * bsize;
-//
-//	int i, j;
-//	unsigned int a, b, t;
-//
-//	// Count the number of blocks with distances falling below the threshold
-//	cnt = 0;
-//	for (a = 0; a < wsize; a++)
-//	{
-//		if (dist[a] < thresh)
-//		{
-//			cnt++;
-//		}
-//	}
-//
-//	// Allocate a matrix for the patch group
-//	patchGroup = (double *)mkl_realloc(patchGroup, sizeof(double)* gsize * cnt);
-//
-//	// Populate the matrix
-//	t = 0;
-//	for (a = 0; a < wsize; a++)
-//	{
-//		if (dist[a] < thresh)
-//		{
-//			// Reset the row counter
-//			b = 0;
-//
-//			// Store the LR patch
-//			for (j = 0; j < lrsize; j++)
-//			{
-//				cblas_dcopy(lrsize, &imgLR[h*w*ch+h*(xPos[a]+j)+yPos[a]], 1, &patchGroup[gsize*t+b], 1);
-//				b += lrsize;
-//			}
-//
-//			// Store the HR patch
-//			for (j = 0; j < hrsize; j++)
-//			{
-//				cblas_dcopy(hrsize, &imgHR[4*h*w*ch+2*h*(2*xPos[a]+j)+2*yPos[a]], 1, &patchGroup[gsize*t+b], 1);
-//				b += hrsize;
-//			}
-//
-//			t++;
-//		}
-//	}
-//
-//	return patchGroup;
-//}
-//
+void vectorizePatch(double *img, double *vector, unsigned int x, unsigned int y, unsigned int c, unsigned int w, unsigned int h, unsigned int bsize)
+{
+	double mean, tmp;
+	unsigned int i, j, a;
+
+	// Copy the patch pixels to the vector in column-major format
+	a = 0;
+	mean = 0;
+	for (j = 0; j < bsize; j++)
+	{
+		cblas_dcopy(bsize, &img[h*w*c+h*(x+j)+y], 1, &vector[a], 1);
+		for (i = 0; i < bsize; i++)
+		{
+			mean += img[h*w*c+h*(x+j)+y+i];
+		}
+		a += bsize;
+	}
+	mean /= (bsize * bsize);
+
+	for (a = 0; a < bsize * bsize; a++)
+	{
+		vector[a] -= mean;
+	}
+
+	return;
+}
+
+void groupPatches(ImagePair img, PatchDesc desc, TrainParams params, PatchGroup &grp)
+{
+	const int lrsize = params.patchSize;
+	const int hrsize = 2 * params.patchSize;
+	const int sqPatchSize = lrsize * lrsize;
+	const int groupSize = 5 * sqPatchSize;
+	const int sqWindowSize = params.windowSize * params.windowSize;
+
+	int i, j;
+	unsigned int a, b, t;
+
+	// Count the number of blocks with distances falling below the threshold
+	grp.cnt = 0;
+	for (a = 0; a < sqWindowSize; a++)
+	{
+		if (desc.dist[a] < params.thresh)
+		{
+			grp.cnt++;
+		}
+	}
+
+	// Populate the matrix
+	t = 0;
+	for (a = 0; a < sqWindowSize; a++)
+	{
+		if (desc.dist[a] < params.thresh)
+		{
+			// Reset the row counter
+			b = 0;
+
+			// Store the LR patch
+			for (j = 0; j < lrsize; j++)
+			{
+				cblas_dcopy(lrsize, &img.imgLR[img.height*img.width*desc.channel+img.height*(desc.xPos[a]+j)+desc.yPos[a]], 1, &grp.data[groupSize*t+b], 1);
+				b += lrsize;
+			}
+
+			// Store the HR patch
+			for (j = 0; j < hrsize; j++)
+			{
+				cblas_dcopy(hrsize, &img.imgHR[4*img.height*img.width*desc.channel+2*img.height*(2*desc.xPos[a]+j)+2*desc.yPos[a]], 1, &grp.data[groupSize*t+b], 1);
+				b += hrsize;
+			}
+
+			t++;
+		}
+	}
+}
+
 //double *getSparseCoefficients(double *patchGroup, double *dict, unsigned int cnt, unsigned int gsize, double sparsity, double recError)
 //{
 //	const int noa = NUMBER_OF_ATOMS;
