@@ -49,7 +49,7 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params);
 void vectorizePatch(double *img, double *vector, unsigned int x, unsigned int y, unsigned int c, unsigned int w, unsigned int h, unsigned int bsize);
 void groupPatches(ImagePair img, PatchDesc desc, TrainParams params, PatchGroup &grp);
 double patchDist(double *nPatch, double *tPatch, unsigned int bsize, double norm);
-double *getSparseCoefficients(double *patchGroup, double *dict, unsigned int cnt, unsigned int gsize, double sparsity, double recError);
+void getSparseCoefficients(PatchGroup grp, Dictionary dict, TrainParams params);
 void updateDictionary(double *patchGroup, double *dict, double *gamma, unsigned int cnt, unsigned int gsize);
 double getTime();
 
@@ -331,8 +331,8 @@ void randPatchTrain(ImagePair img, Dictionary dict, TrainParams params)
 			// Group similar patches
 			groupPatches(img, desc, params, grp);
 
-			//// Determine the sparse coefficients
-			//getSparseCoefficients(patchGroup, dict, cnt, gsize, sparsity, recError);
+			// Determine the sparse coefficients
+			getSparseCoefficients(grp, dict, params);
 		}
 	}
 //	else if (norm == 2)
@@ -557,155 +557,156 @@ void groupPatches(ImagePair img, PatchDesc desc, TrainParams params, PatchGroup 
 	}
 }
 
-//double *getSparseCoefficients(double *patchGroup, double *dict, unsigned int cnt, unsigned int gsize, double sparsity, double recError)
-//{
-//	const int noa = NUMBER_OF_ATOMS;
-//	const int numel = NUMBER_OF_ATOMS * cnt;
-//	const int npix = gsize * cnt;
-//
-//	int i;
-//	unsigned int n, ind;
-//	unsigned int *list;
-//	double tmp;
-//	double *alpha, *talpha, *alphaTotal, *gamma, *residual, *signal, *tdict, *corr, *L, *L2, *T;
-//
-//	list = (unsigned int *)mkl_malloc(sizeof(unsigned int) * NUMBER_OF_ATOMS, 64);
-//
-//	// Allocate necessary resources
-//	L = (double *)mkl_malloc(sizeof(double), 64);
-//	L2 = (double *)mkl_malloc(sizeof(double), 64);
-//	gamma = (double *)mkl_malloc(sizeof(double) * NUMBER_OF_ATOMS * cnt, 64);
-//	alpha = (double *)mkl_malloc(sizeof(double) * NUMBER_OF_ATOMS * cnt, 64);
-//	talpha = (double *)mkl_malloc(sizeof(double) * NUMBER_OF_ATOMS * cnt, 64);
-//	alphaTotal = (double *)mkl_malloc(sizeof(double) * NUMBER_OF_ATOMS, 64);
-//	residual = (double *)mkl_malloc(sizeof(double) * gsize * cnt, 64);
-//	signal = (double *)mkl_malloc(sizeof(double) * gsize * cnt, 64);
-//	tdict = (double *)mkl_malloc(sizeof(double) * gsize * NUMBER_OF_ATOMS, 64);
-//	corr = (double *)mkl_malloc(sizeof(double) * NUMBER_OF_ATOMS, 64);
-//
-//	// Find the correlation between the signals and the dictionary
-//	cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, NUMBER_OF_ATOMS, cnt, gsize, 1, dict, gsize, patchGroup, gsize, 0, alpha, NUMBER_OF_ATOMS);
-//	vdabs(&numel, alpha, talpha);
-//
-//	// Compute for the TOTAL correlation of the dictionary with the patches
-//	cblas_dscal(NUMBER_OF_ATOMS, 0, alphaTotal, 1);
-//	for (i = 0; i < cnt; i++)
-//	{
-//		vdadd(&noa, &talpha[NUMBER_OF_ATOMS*i], alphaTotal, alphaTotal);
-//	}
-//
-//	// Find the largest correlation and consider it the first sparse coefficient (gamma)
-//	L[0] = 1;
-//	list[0] = cblas_idamax(NUMBER_OF_ATOMS, alphaTotal, 1);
-//	cblas_dcopy(cnt, &alpha[list[0]], NUMBER_OF_ATOMS, talpha, 1);
-//
-//	// Copy the dictionary atom to the temporary dictionary
-//	cblas_dcopy(gsize, &dict[gsize*list[0]], 1, tdict, 1); 
-//	cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, gsize, cnt, 1, 1, tdict, gsize, talpha, 1, 0, signal, gsize);
-//
-//	// Compute for the resulting signal using the selected atom
-//	vdsub(&npix, patchGroup, signal, residual);
-//
-//	n = 1;
-//	do
-//	{
-//		// Find the correlation between the signals and the dictionary
-//		cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, NUMBER_OF_ATOMS, cnt, gsize, 1, dict, gsize, residual, gsize, 0, talpha, NUMBER_OF_ATOMS);
-//		vdabs(&numel, talpha, talpha);
-//
-//		// Compute for the TOTAL correlation of the dictionary with the patches
-//		cblas_dscal(NUMBER_OF_ATOMS, 0, alphaTotal, 1);
-//		for (i = 0; i < cnt; i++)
-//		{
-//			vdadd(&noa, &talpha[NUMBER_OF_ATOMS*i], alphaTotal, alphaTotal);
-//		}
-//
-//		// Find the largest correlation
-//		list[n] = cblas_idamax(NUMBER_OF_ATOMS, alphaTotal, 1);
-//
-//		// D'd_k
-//		cblas_dgemv(CblasColMajor, CblasTrans, gsize, n, 1, tdict, gsize, &dict[gsize*list[n]], 1, 0, corr, 1);
-//		cblas_dtrsv(CblasColMajor, CblasLower, CblasNoTrans, CblasNonUnit, n, L, n, corr, 1);
-//		tmp = cblas_dnrm2(n, corr, 1);
-//
-//		// Re-allocate memory for the lower triangular matrices and copy the old matrix contents
-//		L2 = (double *)mkl_realloc(L2, sizeof(double) * (n+1) * (n+1));
-//		for (i = 0; i < n; i++)
-//		{
-//			// Copy the old column of L to L2
-//			cblas_dcopy(n, &L[n*i], 1, &L2[(n+1)*i], 1);
-//
-//			// To save on loops, we recycle this loop for alpha selection as well
-//			// Copy the rows of alpha which are needed to solve for gamma later
-//			cblas_dcopy(cnt, &alpha[list[i]], NUMBER_OF_ATOMS, &talpha[i], n+1);
-//		}
-//
-//		// Copy the last alpha row
-//		cblas_dcopy(cnt, &alpha[list[n]], NUMBER_OF_ATOMS, &talpha[n], n+1);
-//
-//		// Zero out the last column of L2
-//		cblas_dscal(n, 0, &L2[(n+1)*n], 1);
-//
-//		// Add the last row to L2
-//		cblas_dcopy(n, corr, 1, &L2[n], n+1);
-//		L2[(n+1)*n+n] = sqrt(1 - tmp * tmp);
-//
-//		// Swap matrix pointers
-//		T = L;
-//		L = L2;
-//		L2 = T;
-//
-//		// Solve for the sparse coefficients
-//		cblas_dtrsm(CblasColMajor, CblasLeft, CblasLower, CblasNoTrans, CblasNonUnit, n+1, cnt, 1, L, n+1, talpha, n+1);
-//		cblas_dtrsm(CblasColMajor, CblasLeft, CblasLower, CblasTrans, CblasNonUnit, n+1, cnt, 1, L, n+1, talpha, n+1);
-//
-//		// Copy the dictionary atom to the temporary dictionary
-//		cblas_dcopy(gsize, &dict[gsize*list[n]], 1, &tdict[gsize*n], 1); 
-//		cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, gsize, cnt, n+1, 1, tdict, gsize, talpha, n+1, 0, signal, gsize);
-//
-//		// Compute for the resulting signal using the selected atom
-//		vdsub(&npix, patchGroup, signal, residual);
-//
-//		// Calculate the error
-//		tmp = cblas_dnrm2(npix, residual, 1) / sqrt((double)cnt);
-//
-//		n++;
-//	} while (tmp > recError && n < sparsity);
-//
-//	// Populate the final gamma
-//	cblas_dscal(numel, 0, gamma, 1);
-//	for (i = 0; i < n; i++)
-//	{
-//		cblas_dcopy(cnt, &talpha[i], n, &gamma[list[i]], NUMBER_OF_ATOMS);
-//	}
-//
-//	//cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, gsize, cnt, NUMBER_OF_ATOMS, 1, dict, gsize, gamma, NUMBER_OF_ATOMS, 0, residual, gsize);
-//
-//	//CImg<double> imA, imB, imC, imZ(1, BLOCK_SIZE, 1, 1);
-//	//imA.assign(patchGroup, BLOCK_SIZE, BLOCK_SIZE, 1, 1);
-//	//imB.assign(signal, BLOCK_SIZE, BLOCK_SIZE, 1, 1);
-//	////imC.assign(residual, BLOCK_SIZE, BLOCK_SIZE, 1, 1);
-//	//imZ.fill(0);
-//	//imA.append(imZ);
-//	//imA.append(imB);
-//	////imA.append(imZ);
-//	////imA.append(imC);
-//	//imA.display();
-//
-//	mkl_free(list);
-//	mkl_free(L);
-//	mkl_free(L2);
-//	mkl_free(alpha);
-//	mkl_free(talpha);
-//	mkl_free(alphaTotal);
-//	mkl_free(residual);
-//	mkl_free(signal);
-//	mkl_free(tdict);
-//	mkl_free(corr);
-//
-//	return gamma;
-//}
-//
+void getSparseCoefficients(PatchGroup grp, Dictionary dict, TrainParams params)
+{
+	const int dictSize = dict.dictSize;
+	const int numAtoms = dict.numAtoms;
+	const int numData = dict.numAtoms * grp.cnt;
+	const int numPixel = dictSize * grp.cnt;
+
+	int i;
+	unsigned int n, ind;
+	unsigned int *list;
+	double tmp;
+	double *alpha, *talpha, *alphaTotal, *gamma, *residual, *signal, *tdict, *corr, *L, *L2, *T;
+
+	list = (unsigned int *)mkl_malloc(sizeof(unsigned int) * numAtoms, 64);
+
+	// Allocate necessary resources
+	L = (double *)mkl_malloc(sizeof(double) * numAtoms * numAtoms, 64);
+	L2 = (double *)mkl_malloc(sizeof(double)* numAtoms * numAtoms, 64);
+	gamma = (double *)mkl_malloc(sizeof(double) * numAtoms * grp.cnt, 64);
+	alpha = (double *)mkl_malloc(sizeof(double)* numAtoms * grp.cnt, 64);
+	talpha = (double *)mkl_malloc(sizeof(double)* numAtoms * grp.cnt, 64);
+	alphaTotal = (double *)mkl_malloc(sizeof(double) * numAtoms, 64);
+	residual = (double *)mkl_malloc(sizeof(double) * dictSize * grp.cnt, 64);
+	signal = (double *)mkl_malloc(sizeof(double) * dictSize * grp.cnt, 64);
+	tdict = (double *)mkl_malloc(sizeof(double) * dictSize * numAtoms, 64);
+	corr = (double *)mkl_malloc(sizeof(double) * numAtoms, 64);
+
+	// Find the correlation between the signals and the dictionary
+	cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, numAtoms, grp.cnt, dictSize, 1, dict.data, dictSize, grp.data, dictSize, 0, alpha, numAtoms);
+	vdabs(&numData, alpha, talpha);
+
+	// Compute for the TOTAL correlation of the dictionary with the patches
+	cblas_dscal(numAtoms, 0, alphaTotal, 1);
+	for (i = 0; i < grp.cnt; i++)
+	{
+		vdadd(&numAtoms, &talpha[numAtoms*i], alphaTotal, alphaTotal);
+	}
+
+	// Find the largest correlation and consider it the first sparse coefficient (gamma)
+	L[0] = 1;
+	list[0] = cblas_idamax(numAtoms, alphaTotal, 1);
+	cblas_dcopy(grp.cnt, &alpha[list[0]], numAtoms, talpha, 1);
+
+	// Copy the dictionary atom to the temporary dictionary
+	cblas_dcopy(dictSize, &dict.data[dictSize*list[0]], 1, tdict, 1); 
+	cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, dictSize, grp.cnt, 1, 1, tdict, dictSize, talpha, 1, 0, signal, dictSize);
+
+	// Compute for the resulting signal using the selected atom
+	vdsub(&numPixel, grp.data, signal, residual);
+
+	n = 1;
+	do
+	{
+		// Find the correlation between the signals and the dictionary
+		cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, numAtoms, grp.cnt, dictSize, 1, dict.data, dictSize, residual, dictSize, 0, talpha, numAtoms);
+		vdabs(&numData, talpha, talpha);
+
+		// Compute for the TOTAL correlation of the dictionary with the patches
+		cblas_dscal(numAtoms, 0, alphaTotal, 1);
+		for (i = 0; i < grp.cnt; i++)
+		{
+			vdadd(&numAtoms, &talpha[numAtoms*i], alphaTotal, alphaTotal);
+		}
+
+		// Find the largest correlation
+		list[n] = cblas_idamax(numAtoms, alphaTotal, 1);
+
+		// D'd_k
+		cblas_dgemv(CblasColMajor, CblasTrans, dictSize, n, 1, tdict, dictSize, &dict.data[dictSize*list[n]], 1, 0, corr, 1);
+		cblas_dtrsv(CblasColMajor, CblasLower, CblasNoTrans, CblasNonUnit, n, L, n, corr, 1);
+		tmp = cblas_dnrm2(n, corr, 1);
+
+		// Re-allocate memory for the lower triangular matrices and copy the old matrix contents
+		L2 = (double *)mkl_realloc(L2, sizeof(double) * (n+1) * (n+1));
+		for (i = 0; i < n; i++)
+		{
+			// Copy the old column of L to L2
+			cblas_dcopy(n, &L[n*i], 1, &L2[(n+1)*i], 1);
+
+			// To save on loops, we recycle this loop for alpha selection as well
+			// Copy the rows of alpha which are needed to solve for gamma later
+			cblas_dcopy(grp.cnt, &alpha[list[i]], numAtoms, &talpha[i], n+1);
+		}
+
+		// Copy the last alpha row
+		cblas_dcopy(grp.cnt, &alpha[list[n]], numAtoms, &talpha[n], n+1);
+
+		// Zero out the last column of L2
+		cblas_dscal(n, 0, &L2[(n+1)*n], 1);
+
+		// Add the last row to L2
+		cblas_dcopy(n, corr, 1, &L2[n], n+1);
+		L2[(n+1)*n+n] = sqrt(1 - tmp * tmp);
+
+		// Swap matrix pointers
+		T = L;
+		L = L2;
+		L2 = T;
+
+		// Solve for the sparse coefficients
+		cblas_dtrsm(CblasColMajor, CblasLeft, CblasLower, CblasNoTrans, CblasNonUnit, n+1, grp.cnt, 1, L, n+1, talpha, n+1);
+		cblas_dtrsm(CblasColMajor, CblasLeft, CblasLower, CblasTrans, CblasNonUnit, n+1, grp.cnt, 1, L, n+1, talpha, n+1);
+
+		// Copy the dictionary atom to the temporary dictionary
+		cblas_dcopy(dictSize, &dict.data[dictSize*list[n]], 1, &tdict[dictSize*n], 1); 
+		cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, dictSize, grp.cnt, n+1, 1, tdict, dictSize, talpha, n+1, 0, signal, dictSize);
+
+		// Compute for the resulting signal using the selected atom
+		vdsub(&numPixel, grp.data, signal, residual);
+
+		// Calculate the error
+		tmp = cblas_dnrm2(numPixel, residual, 1) / sqrt((double)grp.cnt);
+
+		n++;
+	} while (tmp > params.recError && n < params.sparsity);
+
+	// Populate the final gamma
+	cblas_dscal(numData, 0, gamma, 1);
+	for (i = 0; i < n; i++)
+	{
+		cblas_dcopy(grp.cnt, &talpha[i], n, &gamma[list[i]], numAtoms);
+	}
+
+	cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, dictSize, grp.cnt, numAtoms, 1, dict.data, dictSize, gamma, numAtoms, 0, residual, dictSize);
+
+	CImg<double> imA, imB, imC, imZ(1, params.patchSize, 1, 1);
+	imA.assign(grp.data, params.patchSize, params.patchSize, 1, 1);
+	imB.assign(signal, params.patchSize, params.patchSize, 1, 1);
+	//imC.assign(residual, BLOCK_SIZE, BLOCK_SIZE, 1, 1);
+	imZ.fill(0);
+	imA.append(imZ);
+	imA.append(imB);
+	//imA.append(imZ);
+	//imA.append(imC);
+	imA.display();
+
+	mkl_free(list);
+	mkl_free(L);
+	mkl_free(L2);
+	mkl_free(alpha);
+	mkl_free(talpha);
+	mkl_free(alphaTotal);
+	mkl_free(residual);
+	mkl_free(signal);
+	mkl_free(tdict);
+	mkl_free(corr);
+
+	return;
+}
+
 //void updateDictionary(double *patchGroup, double *dict, double *gamma, unsigned int cnt, unsigned int gsize, double *M, double *C)
 //{
 //	int n, i, j;
